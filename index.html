@@ -112,6 +112,7 @@ a{color:var(--g)}
           <select id="radius"><option value="5000">5 km</option><option value="10000" selected>10 km</option><option value="15000">15 km</option><option value="25000">25 km</option></select>
         </label>
         <label><input type="checkbox" id="soon" checked> Inclure les promos qui démarrent dans les 7 jours</label>
+        <label><input type="checkbox" id="online" checked> Inclure les sites en ligne (Amazon…, livraison)</label>
         <label><input type="checkbox" id="fewer"> Limiter le nombre de magasins (regrouper)</label>
         <label>Position si le GPS est refusé
           <input type="text" id="fallbackPlace" placeholder="Ville ou code postal">
@@ -141,6 +142,7 @@ a{color:var(--g)}
 
 <script>
 const STORES = ["Intermarché","Lidl","Auchan","Super U","Aldi","Netto"];
+const ONLINE = ["Amazon","Cdiscount","Carrefour.fr","Auchan.fr","Leclerc Drive","En ligne"];
 const SUGG = ["lait","beurre","œufs","yaourt","fromage","emmental","poulet","steak haché","porc","bœuf","poisson","saumon","pâtes","café","pain","chocolat","pommes de terre","fruits","légumes","lessive","liquide vaisselle","dentifrice","shampoing"];
 // Synonymes : terme saisi -> motifs recherchés dans les offres
 const SYN = {
@@ -207,7 +209,7 @@ $("addForm").onsubmit=e=>{e.preventDefault();const v=$("addInput").value.trim();
 function renderStores(){
   $("storeBoxes").innerHTML="";
   STORES.forEach(s=>{const l=document.createElement("label");l.innerHTML=`<input type="checkbox"> ${s}`;const c=l.firstChild;c.checked=enabled.includes(s);c.onchange=()=>{enabled=STORES.filter(x=>x===s?c.checked:enabled.includes(x));store.set("stores",enabled)};$("storeBoxes").appendChild(l)});
-  $("topStore").innerHTML='<option value="">Toutes les enseignes</option>'+STORES.concat(["Boucherie"]).map(s=>`<option>${s}</option>`).join("");
+  $("topStore").innerHTML='<option value="">Toutes les enseignes</option>'+STORES.concat(["Boucherie"],ONLINE.slice(0,1)).map(s=>`<option>${s}</option>`).join("");
 }
 $("fallbackPlace").value=store.get("place","");
 $("fallbackPlace").onchange=()=>store.set("place",$("fallbackPlace").value.trim());
@@ -223,6 +225,7 @@ async function loadData(){
   $("dataInfo").textContent=`${DATA.offers.length} promos · mises à jour le ${d.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})} à ${d.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}`;
   $("foot").innerHTML = DATA.note+"<br>Sources : "+DATA.sources.map(s=>`<a href="${s.url}">${s.name}</a>`).join(" · ");
   (DATA.mdd||[]).forEach(m=>{m.hay=norm(m.product+" "+(m.cat||""))});
+  DATA.offers.forEach(o=>{ if(o.odr){o.final=o.promo; o.odr="";} });
   DATA.offers.forEach(o=>{setKg(o);o.hay=norm(o.product+" "+o.brand).replace(/ (pur|au|aux|a la|facon|saveur|farcie?s?|fourres?) [a-z]+(?= )/g," ")});
 }
 // Poids total en kg déduit de la taille (« 640 g », « 2 x 250 g », « 1,2 kg », « ≈ 1 kg »)
@@ -241,7 +244,7 @@ function weightKg(size){
 function mddFor(term){
   if(!DATA||!DATA.mdd) return [];
   const t=norm(term).trim(); const pats=(SYN[t]||[t]).map(p=>norm(p).trim());
-  return DATA.mdd.filter(m=>pats.some(p=>p.split(" ").filter(Boolean).every(w=>m.hay.includes(" "+w+" ")||m.hay.includes(" "+w+"s ")||m.hay.includes(" "+w+"x ")||(w.length>3&&/[sx]$/.test(w)&&m.hay.includes(" "+w.slice(0,-1)+" ")))))
+  return DATA.mdd.filter(m=>!(/ (allege|bio|light) /.test(m.hay)&&!/(allege|bio|light)/.test(t))).filter(m=>pats.some(p=>p.split(" ").filter(Boolean).every(w=>m.hay.includes(" "+w+" ")||m.hay.includes(" "+w+"s ")||m.hay.includes(" "+w+"x ")||(w.length>3&&/[sx]$/.test(w)&&m.hay.includes(" "+w.slice(0,-1)+" ")))))
     .sort((a,b)=>(a.kg??a.price)-(b.kg??b.price));
 }
 const unitOf = m => m.per==="L"?"/L":m.per==="u"?"":"/kg";
@@ -366,7 +369,7 @@ async function run(){
     NEAR=await nearbyStores(POS,+$("radius").value);
     status("🔄 Récupération des dernières promos…");
     await loadData();
-    const allowed=enabled.filter(s=>NEAR[s]?.length).concat(["Boucherie"]);
+    const allowed=enabled.filter(s=>NEAR[s]?.length).concat(["Boucherie"]).concat($("online").checked?ONLINE:[]);
     const soon=$("soon").checked;
     const picks=[], missing=[];
     for(const term of list){
@@ -422,7 +425,8 @@ function offerHTML(o){
   const shown=o.final??o.promo;
   const strike=(o.base&&shown!=null&&o.base>shown)?`<s>${eur(o.base)}</s>`:"";
   const mid=(o.odr&&o.promo!=null&&o.final!=null&&o.promo!==o.final)?`<span class="meta">${eur(o.promo)} en caisse</span>`:"";
-  return {main:`<b></b><div class="meta">${sub} · jusqu'au ${fmtD(o.to)}</div><div>${badges.join("")}</div>`,price:`${strike}<b>${shown==null?o.mech:eur(shown)+(o.manual&&o.kg!=null?"/kg":"")}</b>${mid}`};
+  const link=o.url?` · <a href="${o.url}">voir l'offre</a>`:"";
+  return {main:`<b></b><div class="meta">${sub} · jusqu'au ${fmtD(o.to)}${link}</div><div>${badges.join("")}</div>`,price:`${strike}<b>${shown==null?o.mech:eur(shown)+(o.manual&&o.kg!=null?"/kg":"")}</b>${mid}`};
 }
 function renderRes(){
   $("resEmpty").classList.add("hide");
@@ -431,9 +435,10 @@ function renderRes(){
   let caisse=0, apres=0, normal=0;
   let html="";
   for(const s of Object.keys(by).sort((a,b)=>by[b].length-by[a].length)){
-    const shop=s==="Boucherie"?((NEAR.Boucherie||[]).find(x=>by[s].some(p=>norm(p.choice.brand).includes(norm(x.name).trim())))||{name:by[s][0].choice.brand,addr:"",d:null,lat:null}):NEAR[s][0];
+    const isOnline=ONLINE.includes(s);
+    const shop=isOnline?{name:"Achat en ligne, livraison à domicile",addr:"",d:null,lat:null}:s==="Boucherie"?((NEAR.Boucherie||[]).find(x=>by[s].some(p=>norm(p.choice.brand).includes(norm(x.name).trim())))||{name:by[s][0].choice.brand,addr:"",d:null,lat:null}):NEAR[s][0];
     const maps=shop.lat!=null?`https://www.google.com/maps/dir/?api=1&destination=${shop.lat},${shop.lon}`:"";
-    html+=`<div class="card store"><h3>${s==="Boucherie"?"🥩 ":""}${s} <span class="small">(${by[s].length} article${by[s].length>1?"s":""})</span></h3><div class="where">${shop.name}${shop.addr?", "+shop.addr:""}${shop.d!=null?" · "+shop.d.toFixed(1).replace(".",",")+" km":""}${maps?` · <a href="${maps}">Itinéraire</a>`:""}</div>`;
+    html+=`<div class="card store"><h3>${s==="Boucherie"?"🥩 ":isOnline?"🌐 ":""}${s} <span class="small">(${by[s].length} article${by[s].length>1?"s":""})</span></h3><div class="where">${shop.name}${shop.addr?", "+shop.addr:""}${shop.d!=null?" · "+shop.d.toFixed(1).replace(".",",")+" km":""}${maps?` · <a href="${maps}">Itinéraire</a>`:""}</div>`;
     for(const p of by[s]){
       const o=p.choice, h=offerHTML(o), key=p.term;
       if(o.promo!=null) caisse+=o.promo; if(o.final!=null) apres+=o.final; if(o.base!=null&&o.final!=null) normal+=o.base; else if(o.final!=null) normal+=o.final;
@@ -465,7 +470,7 @@ function renderRes(){
   $("res").querySelectorAll(".line[data-key]").forEach(el=>{const k=decodeURIComponent(el.dataset.key);el.querySelector("input").onchange=e=>{checked[k]=e.target.checked;store.set("checked",checked);el.classList.toggle("done",e.target.checked)}});
   $("res").querySelectorAll(".alt button").forEach(b=>b.onclick=()=>{const p=LAST.picks[+b.dataset.i],j=+b.dataset.j;const a=p.alts[j];p.alts[j]=p.choice;p.choice=a;renderRes()});
   $("copy").onclick=async()=>{
-    const txt=Object.keys(by).map(s=>s.toUpperCase()+" — "+(s==="Boucherie"?by[s][0].choice.brand:NEAR[s][0].name)+"\n"+by[s].map(p=>`☐ ${p.choice.product}${p.choice.brand?" ("+p.choice.brand+")":""} — ${eur(p.choice.final??p.choice.promo)}${p.choice.odr?" [remb. "+p.choice.odr+"]":""}`).join("\n")).join("\n\n")+(missing.length?"\n\nSANS PROMO\n"+missing.map(m=>"☐ "+m).join("\n"):"");
+    const txt=Object.keys(by).map(s=>s.toUpperCase()+" — "+(s==="Boucherie"?by[s][0].choice.brand:ONLINE.includes(s)?"en ligne":NEAR[s][0].name)+"\n"+by[s].map(p=>`☐ ${p.choice.product}${p.choice.brand?" ("+p.choice.brand+")":""} — ${eur(p.choice.final??p.choice.promo)}${p.choice.odr?" [remb. "+p.choice.odr+"]":""}`).join("\n")).join("\n\n")+(missing.length?"\n\nSANS PROMO\n"+missing.map(m=>"☐ "+m).join("\n"):"");
     try{await navigator.clipboard.writeText(txt);$("copy").textContent="Copié ✓"}catch(e){$("copy").textContent="Copie impossible"}
   };
   $("rerun").onclick=()=>{tab("tabList");run()};
@@ -474,7 +479,7 @@ function renderRes(){
 function renderTop(){
   if(!DATA){$("top").innerHTML='<p class="miss">Chargement…</p>';return}
   const f=norm($("topSearch").value).trim(), s=$("topStore").value, near=$("topNear").checked&&NEAR;
-  const rows=DATA.offers.filter(o=>{const v=validity(o);return (v==="now"||v==="soon")&&(!s||o.store===s)&&(!f||o.hay.includes(" "+f))&&(!near||NEAR[o.store]?.length)})
+  const rows=DATA.offers.filter(o=>{const v=validity(o);return (v==="now"||v==="soon")&&(!s||o.store===s)&&(!f||o.hay.includes(" "+f))&&(!near||NEAR[o.store]?.length||ONLINE.includes(o.store))})
     .sort((a,b)=>(pct(b)??0)-(pct(a)??0)).slice(0,60);
   $("top").innerHTML=rows.length?rows.map(o=>{const h=offerHTML(o);return `<div class="line"><div class="txt" data-prod="${o.id}">${h.main}<div class="meta">${o.store}</div></div><div class="price">${h.price}</div></div>`}).join(""):'<p class="miss">Aucune promo trouvée.</p>';
   $("top").querySelectorAll(".txt").forEach(el=>{el.querySelector("b").textContent=DATA.offers[+el.dataset.prod].product});
