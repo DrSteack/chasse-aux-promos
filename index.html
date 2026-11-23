@@ -140,7 +140,7 @@ a{color:var(--g)}
 </main>
 
 <script>
-const STORES = ["Intermarché","Lidl","Auchan","Super U","Aldi"];
+const STORES = ["Intermarché","Lidl","Auchan","Super U","Aldi","Netto"];
 const SUGG = ["lait","beurre","œufs","yaourt","fromage","emmental","poulet","steak haché","porc","bœuf","poisson","saumon","pâtes","café","pain","chocolat","pommes de terre","fruits","légumes","lessive","liquide vaisselle","dentifrice","shampoing"];
 // Synonymes : terme saisi -> motifs recherchés dans les offres
 const SYN = {
@@ -172,7 +172,7 @@ const store = {get(k,d){try{const v=localStorage.getItem("cp_"+k);return v==null
 
 let DATA=null, NEAR=null, POS=null, LAST=null;
 let list = store.get("list", ["lait","beurre","poulet","steak haché","pâtes","café","fromage","lessive"]);
-let enabled = store.get("stores", STORES);
+let enabled = store.get("stores", STORES); if(!store.get("hasNetto",false)){ if(!enabled.includes("Netto")) enabled.push("Netto"); store.set("stores",enabled); store.set("hasNetto",true); }
 let checked = store.get("checked", {});
 let manual = store.get("manual", []);
 const iso = d => d.toISOString().slice(0,10);
@@ -222,6 +222,7 @@ async function loadData(){
   const d=new Date(DATA.updated);
   $("dataInfo").textContent=`${DATA.offers.length} promos · mises à jour le ${d.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})} à ${d.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}`;
   $("foot").innerHTML = DATA.note+"<br>Sources : "+DATA.sources.map(s=>`<a href="${s.url}">${s.name}</a>`).join(" · ");
+  (DATA.mdd||[]).forEach(m=>{m.hay=norm(m.product+" "+(m.cat||""))});
   DATA.offers.forEach(o=>{setKg(o);o.hay=norm(o.product+" "+o.brand).replace(/ (pur|au|aux|a la|facon|saveur|farcie?s?|fourres?) [a-z]+(?= )/g," ")});
 }
 // Poids total en kg déduit de la taille (« 640 g », « 2 x 250 g », « 1,2 kg », « ≈ 1 kg »)
@@ -236,8 +237,17 @@ function weightKg(size){
   if(m) return (+m[1])/(m[2]==="kg"?1:1000);
   return null;
 }
+// Prix de référence des marques distributeur (promos.json → mdd)
+function mddFor(term){
+  if(!DATA||!DATA.mdd) return [];
+  const t=norm(term).trim(); const pats=(SYN[t]||[t]).map(p=>norm(p).trim());
+  return DATA.mdd.filter(m=>pats.some(p=>p.split(" ").filter(Boolean).every(w=>m.hay.includes(" "+w+" ")||m.hay.includes(" "+w+"s ")||m.hay.includes(" "+w+"x ")||(w.length>3&&/[sx]$/.test(w)&&m.hay.includes(" "+w.slice(0,-1)+" ")))))
+    .sort((a,b)=>(a.kg??a.price)-(b.kg??b.price));
+}
+const unitOf = m => m.per==="L"?"/L":m.per==="u"?"":"/kg";
+function mddTxt(m){return `${m.store} « ${m.product} »${m.size?" "+m.size:""} : ${eur(m.price)}${m.kg!=null&&m.per!=="u"?" ("+eur(m.kg)+unitOf(m)+")":""} · relevé ${m.date}`}
 function setKg(o){
-  const m=/([\d]+,[\d]+) €\/kg/.exec(o.unit||""); o.kgCalc=false;
+  const m=/([\d]+,[\d]+) €\/(kg|L)\b/.exec(o.unit||""); o.kgCalc=false;
   if(m){o.kg=parseFloat(m[1].replace(",","."));return}
   const p=o.final??o.promo, w=weightKg(o.size);
   if(p!=null&&w){o.kg=Math.round(p/w*100)/100;o.kgCalc=true}
@@ -268,33 +278,65 @@ function brandOf(tags){
   if(/ lidl /.test(s))return "Lidl";
   if(/ auchan /.test(s))return "Auchan";
   if(/ aldi /.test(s))return "Aldi";
+  if(/ netto /.test(s))return "Netto";
   if(/(super u|hyper u|u express|marche u|systeme u| coop u)/.test(s))return "Super U";
   return null;
 }
-async function nearbyStores(pos,radius){
-  const q=`[out:json][timeout:25];(nwr["shop"~"supermarket|convenience|butcher"](around:${radius},${pos.lat},${pos.lon}););out center tags;`;
-  const eps=["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter"];
-  let lastErr;
-  for(const ep of eps){
+async function fetchT(url,opt={},ms=12000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);try{return await fetch(url,{...opt,signal:c.signal})}finally{clearTimeout(t)}}
+function addShop(out,pos,b,name,addr,lat,lon,radius){const d=dist(pos,{lat,lon});if(d*1000>radius)return;const L=(out[b]=out[b]||[]);if(L.some(x=>Math.abs(x.lat-lat)<0.0008&&Math.abs(x.lon-lon)<0.0008))return;L.push({brand:b,name,addr,lat,lon,d})}
+async function viaNominatim(pos,radius){
+  const dLat=radius/111000, dLon=radius/(111000*Math.cos(pos.lat*Math.PI/180));
+  const vb=[pos.lon-dLon,pos.lat+dLat,pos.lon+dLon,pos.lat-dLat].join(",");
+  const out={};
+  const qs=[["Intermarché",null],["Lidl",null],["Auchan",null],["Super U",null],["Hyper U",null],["U Express",null],["Aldi",null],["Netto",null],["boucherie","Boucherie"],["boucherie charcuterie","Boucherie"]];
+  for(const [q,forced] of qs){
     try{
-      const r=await fetch(ep,{method:"POST",body:"data="+encodeURIComponent(q),headers:{"Content-Type":"application/x-www-form-urlencoded"}});
-      if(!r.ok) throw new Error("HTTP "+r.status);
+      const r=await fetchT(`https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=30&bounded=1&viewbox=${vb}&q=${encodeURIComponent(q)}`,{headers:{"Accept-Language":"fr"}},10000);
+      for(const x of await r.json()){
+        if(x.category!=="shop") continue;
+        const b=forced?(x.type==="butcher"?"Boucherie":null):(["supermarket","convenience"].includes(x.type)?brandOf({name:x.name||q,brand:q}):null);
+        if(!b) continue;
+        const a=x.address||{};
+        addShop(out,pos,b,x.name||b,a.town||a.city||a.village||a.suburb||"",+x.lat,+x.lon,radius);
+      }
+    }catch(e){}
+    await new Promise(r=>setTimeout(r,1050)); // règle d'usage Nominatim : 1 requête/seconde
+  }
+  return out;
+}
+async function viaOverpass(pos,radius){
+  const q=`[out:json][timeout:20];(nwr["shop"~"supermarket|convenience|butcher"](around:${radius},${pos.lat},${pos.lon}););out center tags;`;
+  for(const ep of ["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter"]){
+    try{
+      const r=await fetchT(ep,{method:"POST",body:"data="+encodeURIComponent(q),headers:{"Content-Type":"application/x-www-form-urlencoded"}},15000);
+      if(!r.ok) continue;
       const j=await r.json(); const out={};
       for(const el of j.elements){
         const lat=el.lat??el.center?.lat, lon=el.lon??el.center?.lon; if(lat==null) continue;
-        let b=brandOf(el.tags||{});
-        if(el.tags?.shop==="butcher"){b="Boucherie"; if(!el.tags.name) el.tags.name="Boucherie";}
+        const tags=el.tags||{}; const b=tags.shop==="butcher"?"Boucherie":brandOf(tags);
         if(!b) continue;
-        const d=dist(pos,{lat,lon});
-        const name=el.tags.name||b, addr=[el.tags["addr:city"]].filter(Boolean).join(" ");
-        (out[b]=out[b]||[]).push({brand:b,name,addr,lat,lon,d});
+        addShop(out,pos,b,tags.name||b,tags["addr:city"]||"",lat,lon,radius);
       }
-      for(const b in out) out[b].sort((x,y)=>x.d-y.d);
-      $("butcherList").innerHTML=(out.Boucherie||[]).map(x=>`<option value="${x.name.replace(/"/g,"")}">`).join("");
       return out;
-    }catch(e){lastErr=e}
+    }catch(e){}
   }
-  throw new Error("Recherche des magasins impossible ("+lastErr.message+")");
+  return null;
+}
+async function nearbyStores(pos,radius){
+  let out=null, src="";
+  try{ out=await viaNominatim(pos,radius); src="OpenStreetMap (Nominatim)"; }catch(e){}
+  if(!out||!Object.keys(out).length){ status("🏪 Recherche des magasins (serveur de secours)…"); out=await viaOverpass(pos,radius); src="OpenStreetMap (Overpass)"; }
+  if(out&&Object.keys(out).length){
+    store.set("lastShops",{pos,radius,out,at:Date.now()});
+  }else{
+    const c=store.get("lastShops",null);
+    if(c&&dist(c.pos,pos)<3){ out={}; for(const b in c.out) out[b]=c.out[b].map(x=>({...x,d:dist(pos,x)})); src="dernière recherche enregistrée"; }
+    else throw new Error("Recherche des magasins impossible pour le moment (serveurs OpenStreetMap indisponibles). Réessayez dans quelques minutes.");
+  }
+  for(const b in out) out[b].sort((x,y)=>x.d-y.d);
+  $("butcherList").innerHTML=(out.Boucherie||[]).map(x=>`<option value="${x.name.replace(/"/g,"")}">`).join("");
+  out.__src=src;
+  return out;
 }
 
 // ---------- Analyse
@@ -400,6 +442,9 @@ function renderRes(){
       if(p.ref&&p.ref.avg!=null) cmp=`<div class="meta">🥩 ${p.ref.shop} : ${eur(p.ref.butcher)}/kg · moyenne des promos supermarché : ${eur(p.ref.avg)}/kg (${p.ref.n} offre${p.ref.n>1?"s":""}) → ${p.ref.butcher<p.ref.avg?"boucherie moins chère":"supermarché moins cher"}</div>`;
       else if(p.ref) cmp=`<div class="meta">🥩 ${p.ref.shop} : ${eur(p.ref.butcher)}/kg · poids de la promo inconnu, comparaison au kilo impossible</div>`;
       else if(o.kg!=null&&!o.manual&&p.avg!=null&&p.avg!==o.kg) cmp=`<div class="meta">Moyenne des promos pour cet article : ${eur(p.avg)}/kg</div>`;
+      const md=mddFor(key)[0];
+      if(md){const cheaper=md.kg!=null&&o.kg!=null&&md.per!=="u"&&md.kg<o.kg;
+        cmp+=`<div class="meta">🏷️ Marque distributeur : ${mddTxt(md)}${cheaper?' <span class="badge w">MDD moins chère au kilo</span>':""}</div>`;}
       html+=`<div class="line${checked[key]?" done":""}" data-key="${encodeURIComponent(key)}"><input type="checkbox"${checked[key]?" checked":""}><div class="txt" data-prod="${o.id}" data-term="${encodeURIComponent(key)}">${h.main}${cmp}${alts}</div><div class="price">${h.price}</div></div>`;
     }
     html+=`</div>`;
@@ -409,9 +454,9 @@ function renderRes(){
     <span>À payer en caisse (environ)</span><span class="big">${eur(caisse)}</span>
     ${odr?`<span>Après remboursements (${odr} à demander)</span><span>${eur(apres)}</span>`:""}
     <span>Économie estimée vs prix normal</span><span>${eur(Math.max(0,normal-apres))}</span>
-  </div><p class="small">Autour de ${POS.label} · ${picks.length} article(s) en promo sur ${list.length}.</p>
+  </div><p class="small">Autour de ${POS.label} · ${picks.length} article(s) en promo sur ${list.length} · magasins : ${NEAR.__src||"OpenStreetMap"}.</p>
   <div class="row"><button id="copy">Copier la liste</button><button id="rerun">Relancer</button></div></div>`+html;
-  if(missing.length) html+=`<div class="card"><h2>Pas en promo cette semaine</h2><p class="miss">${missing.join(", ")} — à acheter au meilleur prix habituel (marque distributeur).</p></div>`;
+  if(missing.length) html+=`<div class="card"><h2>Pas en promo cette semaine</h2>${missing.map(t=>{const md=mddFor(t).filter(m=>NEAR[m.store]?.length);return `<div class="line"><div class="txt"><b>${t.replace(/</g,"")}</b><div class="meta">${md.length?"🏷️ Marque distributeur la moins chère connue près de vous : "+mddTxt(md[0]):"Pas encore de prix marque distributeur relevé : prenez la marque du magasin."}</div></div></div>`}).join("")}</div>`;
   if(LAST.butchers.length) html+=`<div class="card"><h2>🥩 Boucheries près de vous</h2>${LAST.butchers.map(b=>`<div class="line"><div class="txt"><b>${b.name.replace(/</g,"")}</b><div class="meta">${b.addr||""} ${b.d.toFixed(1).replace(".",",")} km</div></div><div class="price"><a href="https://www.google.com/maps/dir/?api=1&destination=${b.lat},${b.lon}">Itinéraire</a></div></div>`).join("")}<p class="small">Vu un bon prix en vitrine ? Ajoutez-le dans « Prix vus en boucherie » : il sera comparé au prix au kilo des supermarchés.</p></div>`;
   if(absent.length) html+=`<div class="card"><p class="miss">Aucun magasin trouvé dans le rayon pour : ${absent.join(", ")}. Augmentez le rayon pour les inclure.</p></div>`;
   $("res").innerHTML=html;
