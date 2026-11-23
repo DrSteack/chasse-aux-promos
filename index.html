@@ -143,7 +143,7 @@ a{color:var(--g)}
 <script>
 const STORES = ["Intermarché","Lidl","Auchan","Super U","Aldi","Netto"];
 const ONLINE = ["Amazon","Cdiscount","Carrefour.fr","Auchan.fr","Leclerc Drive","En ligne"];
-const SUGG = ["lait","beurre","œufs","yaourt","fromage","emmental","poulet","steak haché","porc","bœuf","poisson","saumon","pâtes","café","pain","chocolat","pommes de terre","fruits","légumes","lessive","liquide vaisselle","dentifrice","shampoing"];
+const SUGG = ["lait","beurre","œufs","yaourt","fromage","emmental","poulet","steak haché","porc","bœuf","poisson","saumon","pâtes","café","pain","chocolat","pommes de terre","fruits","légumes","lessive","liquide vaisselle","lave-vaisselle","papier toilette","essuie-tout","gel douche","dentifrice","shampoing","flocons d'avoine"];
 // Synonymes : terme saisi -> motifs recherchés dans les offres
 const SYN = {
   "steak hache":["steak hache","steaks haches","viande hachee","hachis","steacks haches"],
@@ -163,7 +163,11 @@ const SYN = {
   "oeufs":["oeufs"],
   "lessive":["lessive"],
   "chocolat":["chocolat","lindt","lindor","kinder","milka","mon cheri","pyreneens"],
-  "liquide vaisselle":["vaisselle"],
+  "liquide vaisselle":["liquide vaisselle"],
+  "lave vaisselle":["lave vaisselle","pastilles lave","capsules lave","tablettes lave"],
+  "papier toilette":["papier toilette","papier hygienique"],
+  "essuie tout":["essuie tout"],
+  "flocons d avoine":["avoine"],
   "beurre":["beurre"],
   "lait":["lait","grandlait","boisson avoine"]
 };
@@ -250,7 +254,7 @@ function mddFor(term){
 const unitOf = m => m.per==="L"?"/L":m.per==="u"?"":"/kg";
 function mddTxt(m){return `${m.store} « ${m.product} »${m.size?" "+m.size:""} : ${eur(m.price)}${m.kg!=null&&m.per!=="u"?" ("+eur(m.kg)+unitOf(m)+")":""} · relevé ${m.date}`}
 function setKg(o){
-  const m=/([\d]+,[\d]+) €\/(kg|L)\b/.exec(o.unit||""); o.kgCalc=false;
+  const m=/([\d]+,[\d]+) €\/(kg|L|lavage)\b/.exec(o.unit||""); o.kgCalc=false; o.per=m?m[2]:"kg";
   if(m){o.kg=parseFloat(m[1].replace(",","."));return}
   const p=o.final??o.promo, w=weightKg(o.size);
   if(p!=null&&w){o.kg=Math.round(p/w*100)/100;o.kgCalc=true}
@@ -376,7 +380,7 @@ async function run(){
       const c=candidates(term,allowed,soon);
       if(c.length){
         let choice=c[0], ref=null;
-        const kgs=c.filter(o=>o.kg!=null).sort((a,b)=>a.kg-b.kg);
+        const kgs=c.filter(o=>o.kg!=null&&(o.per||"kg")===(c[0].per||"kg")).sort((a,b)=>a.kg-b.kg);
         const shops=kgs.filter(o=>!o.manual);
         const avg=shops.length?Math.round(shops.reduce((t,o)=>t+o.kg,0)/shops.length*100)/100:null;
         const bestMan=kgs.find(o=>o.manual);
@@ -446,7 +450,7 @@ function renderRes(){
       let cmp="";
       if(p.ref&&p.ref.avg!=null) cmp=`<div class="meta">🥩 ${p.ref.shop} : ${eur(p.ref.butcher)}/kg · moyenne des promos supermarché : ${eur(p.ref.avg)}/kg (${p.ref.n} offre${p.ref.n>1?"s":""}) → ${p.ref.butcher<p.ref.avg?"boucherie moins chère":"supermarché moins cher"}</div>`;
       else if(p.ref) cmp=`<div class="meta">🥩 ${p.ref.shop} : ${eur(p.ref.butcher)}/kg · poids de la promo inconnu, comparaison au kilo impossible</div>`;
-      else if(o.kg!=null&&!o.manual&&p.avg!=null&&p.avg!==o.kg) cmp=`<div class="meta">Moyenne des promos pour cet article : ${eur(p.avg)}/kg</div>`;
+      else if(o.kg!=null&&!o.manual&&p.avg!=null&&p.avg!==o.kg) cmp=`<div class="meta">Moyenne des promos pour cet article : ${eur(p.avg)}/${o.per||"kg"}</div>`;
       const md=mddFor(key)[0];
       if(md){const cheaper=md.kg!=null&&o.kg!=null&&md.per!=="u"&&md.kg<o.kg;
         cmp+=`<div class="meta">🏷️ Marque distributeur : ${mddTxt(md)}${cheaper?' <span class="badge w">MDD moins chère au kilo</span>':""}</div>`;}
